@@ -9,11 +9,12 @@
   const atlasDrop = document.getElementById("atlas-drop");
   const pageWrap = document.getElementById("page-wrap");
   const pageSelect = document.getElementById("page-select");
+  const pairWrap = document.getElementById("pair-wrap");
+  const pairSelect = document.getElementById("pair-select");
   const restoreTrim = document.getElementById("restore-trim");
   const unpremultiply = document.getElementById("unpremultiply");
   const exportZip = document.getElementById("export-zip");
   const exportPsd = document.getElementById("export-psd");
-  const exportDir = document.getElementById("export-dir");
   const statusEl = document.getElementById("status");
   const warningsEl = document.getElementById("warnings");
   const preview = document.getElementById("preview");
@@ -35,19 +36,21 @@
     selected: 0,
     pageWidth: 0,
     pageHeight: 0,
+    pairs: [],
   };
 
-  const canWriteDir = typeof window.showDirectoryPicker === "function";
-  if (!canWriteDir) {
-    exportDir.hidden = true;
-    document.getElementById("dir-hint").textContent = "当前浏览器不能直接写入文件夹，请用下载的 ZIP。Chrome 或 Edge 通过本机地址打开时可以写入文件夹。";
-  }
-
-  bindFileInput(imageInput, "image");
+  imageInput.addEventListener("change", function () {
+    const files = Array.from(imageInput.files || []);
+    imageInput.value = "";
+    if (files.length) loadImageSelection(files);
+  });
   bindFileInput(atlasInput, "atlas");
-  document.getElementById("load-sample").addEventListener("click", loadSample);
   restoreTrim.addEventListener("change", rebuild);
   unpremultiply.addEventListener("change", rebuild);
+  pairSelect.addEventListener("change", function () {
+    const pair = state.pairs[Number(pairSelect.value)];
+    if (pair) loadPair(pair);
+  });
   pageSelect.addEventListener("change", function () {
     state.pageIndex = Number(pageSelect.value);
     syncPremultiply();
@@ -55,7 +58,6 @@
   });
   exportZip.addEventListener("click", function () { runExport("zip"); });
   exportPsd.addEventListener("click", function () { runExport("psd"); });
-  exportDir.addEventListener("click", function () { runExport("dir"); });
   preview.addEventListener("click", onPreviewClick);
 
   window.addEventListener("resize", function () {
@@ -66,8 +68,9 @@
   });
   window.addEventListener("drop", function (event) {
     event.preventDefault();
-    Array.from(event.dataTransfer.files || []).forEach(function (file) {
-      routeFile(file, "");
+    filesFromDataTransfer(event.dataTransfer).then(function (files) {
+      if (files.some(relativePath)) loadImageSelection(files);
+      else files.forEach(function (file) { routeFile(file, ""); });
     });
   });
 
@@ -77,6 +80,151 @@
       input.value = "";
       if (file) routeFile(file, preferred);
     });
+  }
+
+  async function loadImageSelection(fileList) {
+    const files = Array.from(fileList).filter(isSelectionRoot);
+    const images = files.filter(isImage);
+    const atlases = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (isImage(file) || !isAtlasName(file.name)) continue;
+      let head = "";
+      try { head = await file.slice(0, 8192).text(); } catch (error) { head = ""; }
+      if (looksLikeAtlas(head)) atlases.push(file);
+    }
+    if (!images.length) {
+      setStatus("这个文件夹里没有图片。请选择含有 PNG 和同名 .atlas 的文件夹。");
+      return;
+    }
+    const atlasByKey = {};
+    atlases.forEach(function (atlas) {
+      atlasByKey[pairKey(atlas)] = atlas;
+    });
+    const matched = images.map(function (image) {
+      return { image: image, atlas: atlasByKey[pairKey(image)] || null };
+    }).filter(function (pair) { return pair.atlas; });
+    state.pairs = matched;
+    showPairSelect(matched);
+    if (matched.length === 1) {
+      await loadPair(matched[0]);
+      return;
+    }
+    if (matched.length > 1) {
+      await loadPair(matched[0]);
+      setStatus("找到 " + matched.length + " 组同名图片和图集，当前使用「" + matched[0].image.name + "」。");
+      return;
+    }
+    clearAtlas();
+    await loadImageFile(images[0]);
+    setStatus("已读取「" + images[0].name + "」，同目录没有同名 .atlas。");
+  }
+
+  function clearAtlas() {
+    state.atlas = null;
+    state.atlasFileName = "";
+    state.pageIndex = 0;
+    atlasName.textContent = "选 .atlas 文本，不要选骨架 json";
+    atlasDrop.classList.remove("ready");
+    pageWrap.hidden = true;
+    pageSelect.innerHTML = "";
+  }
+
+  async function loadPair(pair) {
+    await loadImageFile(pair.image);
+    await loadAtlasText(pair.atlas.name, await pair.atlas.text());
+    setStatus("已读取「" + pair.image.name + "」，并自动选中同名图集「" + pair.atlas.name + "」。");
+  }
+
+  function showPairSelect(pairs) {
+    pairSelect.innerHTML = "";
+    if (pairs.length < 2) {
+      pairWrap.hidden = true;
+      return;
+    }
+    pairs.forEach(function (pair, index) {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = pair.image.name + " + " + pair.atlas.name;
+      pairSelect.appendChild(option);
+    });
+    pairWrap.hidden = false;
+  }
+
+  function isSelectionRoot(file) {
+    const path = relativePath(file);
+    if (!path) return true;
+    return path.split("/").length === 2;
+  }
+
+  function relativePath(file) {
+    return file.webkitRelativePath || file.relativePath || "";
+  }
+
+  function pairKey(file) {
+    const path = relativePath(file);
+    const dir = path ? path.split("/").slice(0, -1).join("/") : "";
+    return dir + "/" + stemOf(file.name);
+  }
+
+  function stemOf(name) {
+    const base = String(name).split(/[/\\]/).pop();
+    return base.replace(/\.atlas\.txt$/i, "").replace(/\.[^.]+$/, "").toLowerCase();
+  }
+
+  function isAtlasName(name) {
+    return /\.atlas(\.txt)?$/i.test(name);
+  }
+
+  function filesFromDataTransfer(dataTransfer) {
+    const items = dataTransfer.items ? Array.from(dataTransfer.items) : [];
+    const entries = items.map(function (item) {
+      return item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+    }).filter(Boolean);
+    if (!entries.some(function (entry) { return entry.isDirectory; })) {
+      return Promise.resolve(Array.from(dataTransfer.files || []));
+    }
+    const files = [];
+    return Promise.all(entries.map(function (entry) {
+      if (entry.isDirectory) return readDirectory(entry, entry.name, files);
+      return fileFromEntry(entry).then(function (file) { files.push(file); });
+    })).then(function () { return files; });
+  }
+
+  function readDirectory(dir, prefix, out) {
+    return new Promise(function (resolve, reject) {
+      const reader = dir.createReader();
+      function batch() {
+        reader.readEntries(function (entries) {
+          if (!entries.length) {
+            resolve();
+            return;
+          }
+          Promise.all(entries.filter(function (entry) { return entry.isFile; }).map(function (entry) {
+            return fileFromEntry(entry).then(function (file) {
+              out.push(tagPath(file, prefix + "/" + entry.name));
+            });
+          })).then(batch, reject);
+        }, reject);
+      }
+      batch();
+    });
+  }
+
+  function fileFromEntry(entry) {
+    return new Promise(function (resolve, reject) {
+      entry.file(resolve, reject);
+    });
+  }
+
+  function tagPath(file, path) {
+    try {
+      Object.defineProperty(file, "webkitRelativePath", { value: path });
+    } catch (error) {
+      file.relativePath = path;
+    }
+    if (!file.webkitRelativePath) file.relativePath = path;
+    return file;
   }
 
   async function routeFile(file, preferred) {
@@ -171,26 +319,6 @@
     rebuild();
   }
 
-  function loadSample() {
-    const sample = makeSample();
-    state.imageFileName = sample.imageName;
-    state.atlasFileName = sample.atlasName;
-    state.image = sample.image;
-    state.atlas = SpineAtlas.parseAtlas(sample.atlasText);
-    const canvas = document.createElement("canvas");
-    canvas.width = sample.image.width;
-    canvas.height = sample.image.height;
-    canvas.getContext("2d").putImageData(new ImageData(sample.image.data, sample.image.width, sample.image.height), 0, 0);
-    state.previewSource = canvas;
-    imageName.textContent = sample.imageName + " · " + sample.image.width + "×" + sample.image.height;
-    atlasName.textContent = sample.atlasName;
-    imageDrop.classList.add("ready");
-    atlasDrop.classList.add("ready");
-    choosePage();
-    rebuild();
-    setStatus("已载入示例。badge 在图集里旋转了 90°，拆出来后应是正的 L。");
-  }
-
   function choosePage() {
     if (!state.atlas) return;
     const matched = SpineAtlas.matchPage(state.atlas.pages, state.imageFileName);
@@ -224,7 +352,6 @@
     const ready = state.image && state.atlas;
     exportZip.disabled = !ready;
     exportPsd.disabled = !ready;
-    exportDir.disabled = !ready || !canWriteDir;
     if (!ready) {
       drawPreview();
       if (state.atlas && !state.image) {
@@ -266,7 +393,6 @@
     renderPieces();
     exportZip.disabled = !state.sprites.length;
     exportPsd.disabled = !state.sprites.length;
-    exportDir.disabled = !state.sprites.length || !canWriteDir;
   }
 
   function renderWarnings() {
@@ -411,18 +537,14 @@
     if (!state.sprites.length) return;
     exportZip.disabled = true;
     exportPsd.disabled = true;
-    exportDir.disabled = true;
     try {
       if (kind === "psd") await savePsd();
-      else if (kind === "dir") await saveDirectory();
       else await saveZip();
     } catch (error) {
-      if (error && error.name === "AbortError") setStatus("已取消选择文件夹。");
-      else setStatus(error.message || "导出失败");
+      setStatus(error.message || "导出失败");
     } finally {
       exportZip.disabled = false;
       exportPsd.disabled = false;
-      exportDir.disabled = !canWriteDir;
     }
   }
 
@@ -437,20 +559,6 @@
     const zip = SpineAtlas.encodeZip(entries);
     download(new Blob([zip], { type: "application/zip" }), folder + ".zip");
     setStatus("已下载 " + folder + ".zip，里面有 " + entries.length + " 张 PNG。");
-  }
-
-  async function saveDirectory() {
-    setStatus("请选择要写入的文件夹…");
-    const root = await window.showDirectoryPicker({ mode: "readwrite" });
-    const folder = folderName();
-    const dir = await root.getDirectoryHandle(folder, { create: true });
-    for (const sprite of state.sprites) {
-      const handle = await dir.getFileHandle(sprite.fileName, { create: true });
-      const stream = await handle.createWritable();
-      await stream.write(await pngBlob(sprite));
-      await stream.close();
-    }
-    setStatus("已写入文件夹「" + folder + "」，共 " + state.sprites.length + " 张 PNG。");
   }
 
   async function savePsd() {
@@ -496,72 +604,5 @@
 
   function setStatus(text) {
     statusEl.textContent = text;
-  }
-
-  function makeSample() {
-    const width = 96;
-    const height = 72;
-    const data = new Uint8ClampedArray(width * height * 4);
-    fillRect(data, width, 0, 0, width, height, [236, 228, 214, 255]);
-    fillRect(data, width, 8, 10, 28, 36, [15, 95, 90, 255]);
-    fillRect(data, width, 14, 16, 16, 6, [255, 248, 236, 255]);
-    fillRect(data, width, 14, 26, 10, 6, [255, 248, 236, 255]);
-    const badge = { width: 26, height: 16, data: new Uint8ClampedArray(26 * 16 * 4) };
-    fillRect(badge.data, 26, 0, 0, 6, 16, [168, 72, 28, 255]);
-    fillRect(badge.data, 26, 0, 10, 26, 6, [168, 72, 28, 255]);
-    stampRotated(data, width, badge, 52, 12);
-    const atlasText = [
-      "sample.png",
-      "size: 96, 72",
-      "format: RGBA8888",
-      "filter: Linear,Linear",
-      "repeat: none",
-      "mark",
-      "  rotate: false",
-      "  xy: 8, 10",
-      "  size: 28, 36",
-      "  orig: 28, 36",
-      "  offset: 0, 0",
-      "  index: -1",
-      "badge",
-      "  rotate: 90",
-      "  xy: 52, 12",
-      "  size: 26, 16",
-      "  orig: 26, 16",
-      "  offset: 0, 0",
-      "  index: -1",
-      "",
-    ].join("\n");
-    return { imageName: "sample.png", atlasName: "sample.atlas", image: { width: width, height: height, data: data }, atlasText: atlasText };
-  }
-
-  function stampRotated(dest, destWidth, source, x, y) {
-    for (let oy = 0; oy < source.height; oy++) {
-      for (let ox = 0; ox < source.width; ox++) {
-        const px = oy;
-        const py = source.width - 1 - ox;
-        const si = (oy * source.width + ox) * 4;
-        if (source.data[si + 3] === 0) continue;
-        const dx = x + px;
-        const dy = y + py;
-        const di = (dy * destWidth + dx) * 4;
-        dest[di] = source.data[si];
-        dest[di + 1] = source.data[si + 1];
-        dest[di + 2] = source.data[si + 2];
-        dest[di + 3] = source.data[si + 3];
-      }
-    }
-  }
-
-  function fillRect(data, width, x, y, w, h, color) {
-    for (let yy = 0; yy < h; yy++) {
-      for (let xx = 0; xx < w; xx++) {
-        const i = ((y + yy) * width + (x + xx)) * 4;
-        data[i] = color[0];
-        data[i + 1] = color[1];
-        data[i + 2] = color[2];
-        data[i + 3] = color[3];
-      }
-    }
   }
 })();

@@ -78,7 +78,7 @@
 
     .drop { position: relative; }
     .drop strong { font-size: 16px; }
-    .drop span, .hint, .region-meta { color: var(--muted); }
+    .drop span, .region-meta { color: var(--muted); }
     .drop.ready { border-style: solid; border-color: var(--teal); background: #f3faf8; }
     .drop input {
       position: absolute;
@@ -225,20 +225,24 @@
   <div class="wrap">
     <header>
       <h1>Spine 图集拆图</h1>
-      <p>选择一张图集 PNG 和对应的 <code>.atlas</code>。按区域拆成独立图片，或导出成分层 PSD。处理在浏览器本地完成，图片不会上传。没有骨架文件时，图层按图集上的位置摆放，不会自动拼回角色姿势。</p>
+      <p>选择图片所在文件夹，会自动带上同名 <code>.atlas</code>。按区域拆成独立图片，或导出成分层 PSD。处理在浏览器本地完成，图片不会上传。没有骨架文件时，图层按图集上的位置摆放，不会自动拼回角色姿势。</p>
     </header>
     <main>
       <section class="panel">
         <div class="drop" id="image-drop">
           <strong>图集图片</strong>
-          <span id="image-name">PNG、WebP 或 JPEG</span>
-          <input id="image-input" type="file" accept="image/png,image/webp,image/jpeg,.png,.webp,.jpg,.jpeg">
+          <span id="image-name">选择图片所在文件夹，自动匹配同名 .atlas</span>
+          <input id="image-input" type="file" webkitdirectory multiple>
         </div>
         <div class="drop" id="atlas-drop">
           <strong>Spine 图集描述</strong>
           <span id="atlas-name">选 .atlas 文本，不要选骨架 json</span>
           <input id="atlas-input" type="file">
         </div>
+        <label id="pair-wrap" hidden>
+          同名组合
+          <select id="pair-select"></select>
+        </label>
         <label id="page-wrap" hidden>
           图集页面
           <select id="page-select"></select>
@@ -252,12 +256,9 @@
           <span>取消预乘透明。图集标了 pma 时会自动勾上。</span>
         </label>
         <div class="actions">
-          <button id="load-sample" type="button">载入示例</button>
           <button id="export-zip" class="primary" type="button" disabled>下载文件夹（ZIP）</button>
           <button id="export-psd" type="button" disabled>下载 PSD</button>
-          <button id="export-dir" type="button" disabled>写入本地文件夹</button>
         </div>
-        <p class="hint" id="dir-hint"></p>
         <div id="warnings"></div>
         <p class="status" id="status" aria-live="polite"></p>
       </section>
@@ -267,7 +268,7 @@
           <div class="preview-frame">
             <canvas id="preview" width="640" height="360"></canvas>
           </div>
-          <p class="empty" id="preview-empty">还没有图片。可以先载入示例。</p>
+          <p class="empty" id="preview-empty">还没有图片。</p>
         </div>
         <div class="panel">
           <h2>拆出的部件</h2>
